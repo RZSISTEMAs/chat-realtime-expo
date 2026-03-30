@@ -62,6 +62,10 @@ const initDB = async () => {
             await pool.query('ALTER TABLE users ADD COLUMN is_verified BOOLEAN DEFAULT 0');
             console.log('Coluna is_verified adicionada.');
         }
+        if (!colNames.includes('game_points')) {
+            await pool.query('ALTER TABLE users ADD COLUMN game_points INT DEFAULT 0');
+            console.log('Coluna game_points adicionada.');
+        }
         await pool.query('UPDATE users SET is_online = 0');
 
         // Garante que o ENUM de media_type aceite 'image' (REPARO)
@@ -113,6 +117,10 @@ const formatUserResponse = (user) => {
         const cleanPath = u.profile_background.startsWith('/') ? u.profile_background : `/uploads/${u.profile_background}`;
         u.profile_background = `${baseUrl}${cleanPath}`;
     }
+
+    // Garante que game_points sempre exista como número
+    u.game_points = parseInt(u.game_points || 0);
+
     return u;
 };
 
@@ -149,8 +157,37 @@ app.post('/api/users/register', async (req, res) => {
         const [rows] = await pool.query('SELECT * FROM users WHERE id = ?', [result.insertId]);
         res.json({ success: true, user: formatUserResponse(rows[0]) });
     } catch (err) {
-        console.error(err);
+        console.error("Erro no Registro:", err);
         res.status(500).json({ error: 'Erro no servidor' });
+    }
+});
+
+// === Endpoints de Jogos & Ranking ===
+
+// Busca os TOP 20 Jogadores (Leaderboard)
+app.get('/api/games/leaderboard', async (req, res) => {
+    try {
+        const [rows] = await pool.query(
+            'SELECT id, name, username, profile_pic, game_points FROM users ORDER BY game_points DESC LIMIT 20'
+        );
+        const formatted = rows.map(u => formatUserResponse(u));
+        res.json({ success: true, leaderboard: formatted });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Erro ao buscar ranking' });
+    }
+});
+
+// Adiciona pontos ao usuário após vitória
+app.post('/api/games/add-points', async (req, res) => {
+    const { userId, points } = req.body;
+    try {
+        await pool.query('UPDATE users SET game_points = game_points + ? WHERE id = ?', [points, userId]);
+        const [rows] = await pool.query('SELECT game_points FROM users WHERE id = ?', [userId]);
+        res.json({ success: true, newPoints: rows[0].game_points });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Erro ao adicionar pontos' });
     }
 });
 
@@ -168,6 +205,21 @@ app.post('/api/users/login', async (req, res) => {
         res.json({ success: true, user: formatUserResponse(user) });
     } catch (err) {
         res.status(500).json({ error: 'Erro no servidor' });
+    }
+});
+
+app.get('/api/users/profile/:id', async (req, res) => {
+    try {
+        const { id } = req.params;
+        const [rows] = await pool.query(
+            'SELECT id, name, username, age, description, profile_pic, profile_background, is_verified, game_points, is_online, last_seen FROM users WHERE id = ?',
+            [id]
+        );
+        if (rows.length === 0) return res.status(404).json({ error: 'Usuário não encontrado' });
+        res.json({ success: true, user: formatUserResponse(rows[0]) });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Erro no servidor ao buscar perfil' });
     }
 });
 
@@ -489,6 +541,42 @@ io.on('connection', (socket) => {
             }
             broadcastOnlineUsers();
         }
+    });
+
+    // === Sistema Multiplayer Game ===
+    
+    // Enviar Convite de Jogo
+    socket.on('send_game_invite', (data) => {
+        // data: { senderId, receiverId, gameId, senderName }
+        console.log(`[Game] Convite de ${data.senderName} para ${data.receiverId}`);
+        io.to(`user_${data.receiverId}`).emit('receive_game_invite', data);
+    });
+
+    // Responder Convite (Aceitar/Recusar)
+    socket.on('respond_game_invite', (data) => {
+        // data: { senderId, receiverId, accepted, gameId }
+        const room = `game_${Math.min(data.senderId, data.receiverId)}_${Math.max(data.senderId, data.receiverId)}`;
+        
+        if (data.accepted) {
+            socket.join(room);
+            // Avisar o remetente que foi aceito
+            io.to(`user_${data.senderId}`).emit('game_invite_accepted', { ...data, room });
+            console.log(`[Game] Sala criada: ${room}`);
+        } else {
+            io.to(`user_${data.senderId}`).emit('game_invite_rejected', data);
+        }
+    });
+
+    // Entrar na sala de jogo (chamado pelo remetente ao saber do aceite)
+    socket.on('join_game_room', (room) => {
+        socket.join(room);
+        console.log(`[Socket] ${socket.id} entrou na sala ${room}`);
+    });
+
+    // Sincronizar Jogada
+    socket.on('send_game_move', (data) => {
+        // data: { room, move, senderId }
+        socket.to(data.room).emit('receive_game_move', data);
     });
 
     socket.on('send_message', async (data) => {

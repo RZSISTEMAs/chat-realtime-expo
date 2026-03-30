@@ -228,9 +228,14 @@ const styles = StyleSheet.create({
     fontWeight: '900',
     color: '#FFF',
     letterSpacing: 1,
-    textShadowColor: 'rgba(0, 208, 132, 0.5)',
-    textShadowOffset: { width: 0, height: 0 },
-    textShadowRadius: 15,
+    ...Platform.select({
+      web: { textShadow: '0 0 15px rgba(0, 208, 132, 0.5)' },
+      default: {
+        textShadowColor: 'rgba(0, 208, 132, 0.5)',
+        textShadowOffset: { width: 0, height: 0 },
+        textShadowRadius: 15,
+      }
+    })
   },
   tagline: {
     color: 'rgba(255,255,255,0.6)',

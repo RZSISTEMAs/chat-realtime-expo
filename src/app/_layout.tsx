@@ -3,10 +3,19 @@ import { StatusBar } from 'expo-status-bar';
 import { Platform, View, useWindowDimensions, StyleSheet, LogBox } from 'react-native';
 import { COLORS } from '../constants/theme';
 import * as Notifications from 'expo-notifications';
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
+import { SocketProvider, useSocket } from '../context/SocketContext';
+import { useRouter } from 'expo-router';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { Alert } from 'react-native';
 
 // Silencia o aviso insistente do Expo Go sobre notificações no Android
-LogBox.ignoreLogs(['expo-notifications: Android Push notifications']);
+LogBox.ignoreLogs([
+  'expo-notifications',
+  'shadow*',
+  'pointerEvents',
+  'deprecated',
+]);
 
 // Configura como as notificações devem se comportar quando o app está aberto (Apenas Celular)
 if (Platform.OS !== 'web') {
@@ -19,6 +28,41 @@ if (Platform.OS !== 'web') {
       shouldSetBadge: false,
     }),
   });
+}
+
+// Manipulador Global de Convites (Invisível, escuta em todo o app)
+function GlobalInviteHandler() {
+  const { socket } = useSocket();
+  const router = useRouter();
+
+  useEffect(() => {
+    if (!socket) return;
+
+    const handleInvite = (data: any) => {
+      Alert.alert(
+        "Duelo Recebido! ⚔️",
+        `${data.senderName} te desafiou para uma partida de ${data.gameId === 'tic-tac-toe' ? 'Jogo da Velha' : 'Truco'}!`,
+        [
+          { text: "Recusar", style: "cancel", onPress: () => socket.emit('respond_game_invite', { ...data, accepted: false }) },
+          { text: "ACEITAR!", onPress: () => {
+              socket.emit('respond_game_invite', { ...data, accepted: true });
+              const room = `game_${Math.min(data.senderId, data.receiverId)}_${Math.max(data.senderId, data.receiverId)}`;
+              router.push({ 
+                pathname: `/games/${data.gameId}` as any, 
+                params: { mode: 'online', room, opponentId: data.senderId } 
+              });
+          }}
+        ]
+      );
+    };
+
+    socket.on('receive_game_invite', handleInvite);
+    return () => {
+      socket.off('receive_game_invite', handleInvite);
+    };
+  }, [socket]);
+
+  return null;
 }
 
 export default function Layout() {
@@ -56,19 +100,22 @@ export default function Layout() {
 
   if (isWeb && !isAuthScreen) {
     return (
-      <View style={styles.webContainer}>
-        <StatusBar style="light" />
-        <View style={styles.webContent}>
-           <View style={styles.mainArea}>
-              <Slot />
-           </View>
+      <SocketProvider>
+        <View style={styles.webContainer}>
+          <StatusBar style="light" />
+          <View style={styles.webContent}>
+             <View style={styles.mainArea}>
+                <Slot />
+             </View>
+          </View>
         </View>
-      </View>
+      </SocketProvider>
     );
   }
 
   return (
-    <>
+    <SocketProvider>
+      <GlobalInviteHandler />
       <StatusBar style="light" />
       <Stack screenOptions={{ headerShown: false }}>
         <Stack.Screen name="index" />
@@ -76,7 +123,7 @@ export default function Layout() {
         <Stack.Screen name="chat/[id]" />
         <Stack.Screen name="chat/ayla" />
       </Stack>
-    </>
+    </SocketProvider>
   );
 }
 
@@ -95,9 +142,14 @@ const styles = StyleSheet.create({
     backgroundColor: '#000', 
     borderRadius: 30,
     overflow: 'hidden',
-    shadowColor: '#646cff',
-    shadowOpacity: 0.2,
-    shadowRadius: 30,
+    ...Platform.select({
+      web: { boxShadow: '0 0 30px rgba(100, 108, 255, 0.2)' },
+      default: {
+        shadowColor: '#646cff',
+        shadowOpacity: 0.2,
+        shadowRadius: 30,
+      }
+    }),
     elevation: 20,
     borderWidth: 1,
     borderColor: 'rgba(255, 255, 255, 0.08)',
